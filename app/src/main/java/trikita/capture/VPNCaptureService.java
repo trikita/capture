@@ -30,11 +30,14 @@ public class VPNCaptureService extends VpnService {
         Log.d(TAG, "onStartCommand");
         if (intent.getAction() == START_VPN_ACTION) {
             try {
-                mVpnThread = new VPNThread(new Builder().addAddress("1.1.1.1", 32).establish());
+                mVpnThread = new VPNThread(new Builder()
+                        .addRoute("0.0.0.0", 0)
+                        .addAddress("1.1.1.1", 32)
+                        .establish(), this);
+                mVpnThread.start();
             } catch (IOException e) {
                 e.printStackTrace();
             }
-            mVpnThread.start();
         } else if (intent.getAction() == STOP_VPN_ACTION) {
             mVpnThread.interrupt();
         }
