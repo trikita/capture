@@ -9,7 +9,6 @@ import java.net.InetSocketAddress;
 import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
-import java.nio.channels.SelectableChannel;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.util.HashMap;
@@ -18,6 +17,8 @@ import java.util.Map;
 public class UDPHandler {
 
     private static final String TAG = "UDPHandler";
+    public static final byte UDP_HEADER_LEN = 8;    // 8 bytes
+
     private final Selector mSelector;
     private final VPNCaptureService mVPNService;
 
@@ -28,8 +29,8 @@ public class UDPHandler {
         mVPNService = svc;
     }
 
-
-    public void processPacket(InetAddress srcAddress, InetAddress dstAddress, ByteBuffer ip) throws IOException {
+    // Unwraps raw data from a valid outgoing UDP datagram and sends to the net
+    public void processInput(InetAddress srcAddress, InetAddress dstAddress, ByteBuffer ip) throws IOException {
         int srcPort = (ip.getShort() & 0xffff);
         int dstPort = (ip.getShort() & 0xffff);
         int len = (ip.getShort() & 0xffff);
@@ -37,18 +38,16 @@ public class UDPHandler {
         Log.d(TAG, "UDP: srcAddress="+srcAddress+" dstAddress="+dstAddress+" srcPort="+srcPort+" dstPort="+dstPort+
                 "\nremaining="+ip.remaining()+" len="+len);
 
-        Log.d(TAG, "Open datagram channel");
         try {
             Pair<InetSocketAddress, InetSocketAddress> key =
                     new Pair<>(new InetSocketAddress(dstAddress, dstPort),
                             new InetSocketAddress(srcAddress, srcPort));
             DatagramChannel socket = mSockets.get(key);
             if (socket == null) {
+                Log.d(TAG, "Open datagram channel");
                 socket = DatagramChannel.open();
                 Log.d(TAG, "Connecting..");
                 socket.connect(key.first);
-                Log.d(TAG, "Set non-blocking datagram channel");
-                socket.configureBlocking(false);
                 Log.d(TAG, "Set non-blocking datagram channel");
                 socket.configureBlocking(false);
                 Log.d(TAG, "Register in selector for read");
@@ -72,25 +71,26 @@ public class UDPHandler {
         }
     }
 
-    public int processData(DatagramChannel channel, ByteBuffer writeBuffer, int srcPort, int dstPort) throws IOException {
+    // Wraps raw data from the net into a valid incoming UDP datagram
+    public byte processOutput(DatagramChannel channel, ByteBuffer writeBuffer, int srcPort, int dstPort) throws IOException {
         // leave bytes for UDP datagram header
-        writeBuffer.position(writeBuffer.position() + 8);
+        writeBuffer.position(writeBuffer.position() + UDP_HEADER_LEN);
 
         int cnt = channel.read(writeBuffer);
         if (cnt <= 0) throw new IOException();
 
+        fillHeader(writeBuffer, srcPort, dstPort, UDP_HEADER_LEN+cnt);
+
+        return (byte) (UDP_HEADER_LEN+cnt);
+    }
+
+    public static void fillHeader(ByteBuffer buf, int srcPort, int dstPort, int dataLen) {
         // move position to the beginning of UDP header
-        writeBuffer.position(20);
+        buf.position(IPHandler.IP_HEADER_LEN);
 
-        // write UDP header
-        writeBuffer.putShort((short) srcPort);
-        writeBuffer.putShort((short) dstPort);
-        writeBuffer.putShort((short) (8+cnt));
-        writeBuffer.putShort((short) 0);
-
-        // move position to the beginning of IP header
-        writeBuffer.position(0);
-
-        return 8+cnt;
+        buf.putShort((short) srcPort);
+        buf.putShort((short) dstPort);
+        buf.putShort((short) dataLen);
+        buf.putShort((short) 0);    // Checksum
     }
 }

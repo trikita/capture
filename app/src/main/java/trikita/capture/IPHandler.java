@@ -8,24 +8,37 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
-import java.nio.channels.SelectableChannel;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
+import java.nio.channels.SocketChannel;
 
 public class IPHandler {
 
     private static final String TAG = "IPHandler";
 
+    public static final int IP_PACKET_SIZE = 64 * 1024; // max possible packet size
+    public static final byte IP4_VERSION = 4;       // IPv4
+    public static final byte IP_HEADER_LEN = 20;    // 20 bytes
+    public static final byte IP_TTL = 0x64;    // 100 sec
+    public static final byte UDP_PROTOCOL = 0x11;   // 17
+    public static final byte TCP_PROTOCOL = 0x06;   // 6
+
     private final Selector mSelector;
     private final UDPHandler mUDPHandler;
+    private final TCPHandler mTCPHandler;
 
-    public IPHandler(Selector selector, VPNCaptureService svc) {
+    public IPHandler(Selector selector, VPNCaptureService svc, VPNThread thread) {
         mSelector = selector;
         mUDPHandler = new UDPHandler(mSelector, svc);
+        mTCPHandler = new TCPHandler(mSelector, svc, thread);
     }
 
-    public void processIP(ByteBuffer ip) throws IOException {
-        //hexdump(ip, 64);
+    // Unwraps raw data from a valid outgoing IP packet and sends to the net
+    public void processInput(ByteBuffer ip) throws IOException {
+        Log.d(TAG, "processInput()");
+        Log.d(TAG, "--- IP OUT ---");
+        Utils.hexdump(ip, ip.remaining());
+
         byte header = ip.get();
         if ((header & 0xf0) != 0x40) {
             throw new IOException("not an IP packet header: " + header);
@@ -35,9 +48,9 @@ public class IPHandler {
         int totalLength = ip.getShort() & 0xffff;
         ip.getInt();   // skipping till "Protocol"
         ip.get();   // skipping till "Protocol"
-        int protocol = (ip.get() & 0xff);
+        short protocol = (short) (ip.get() & 0xff);
 
-        if (protocol != 6 && protocol != 17) {
+        if (protocol != TCP_PROTOCOL && protocol != UDP_PROTOCOL) {
             Log.d(TAG, "Unknown packet type");
             return;
         }
@@ -54,92 +67,75 @@ public class IPHandler {
         InetAddress dstAddress = InetAddress.getByAddress(addr);
 
         // skip the rest of header bytes till data
-        for (int i = 0; i < (headerLen - 20); i++) {
+        for (int i = 0; i < (headerLen - IP_HEADER_LEN); i++) {
             ip.get();
         }
-        if (protocol == 6) {    // TCP packet
-            //Log.d(TAG, "TCP packet detected: protocol="+protocol);
-        } else if (protocol == 17) {     // UDP packet
+        if (protocol == TCP_PROTOCOL) {    // TCP packet
+            Log.d(TAG, "TCP packet detected: protocol=" + protocol);
+            Utils.hexdump(ip, 64);
+            mTCPHandler.processInput(srcAddress, dstAddress, ip);
+        } else if (protocol == UDP_PROTOCOL) {     // UDP packet
             Log.d(TAG, "UDP packet detected: protocol=" + protocol);
-            mUDPHandler.processPacket(srcAddress, dstAddress, ip);
+            mUDPHandler.processInput(srcAddress, dstAddress, ip);
         }
     }
 
-    private final static char[] HEX = "0123456789abcdef".toCharArray();
-
-    private void hexdump(ByteBuffer b, int len) {
-        int pos = b.position();
-        StringBuilder sb = new StringBuilder();
-        len = Math.min(len, b.remaining());
-        for (int i = 0; i < len; i++) {
-            byte octet = b.get();
-            sb.append(HEX[((octet & 0xf0) >> 4)]);
-            sb.append(HEX[(octet & 0x0f)]);
-            sb.append(' ');
-        }
-        b.position(pos);
-        Log.d(TAG, sb.toString());
-    }
-
-    public ByteBuffer processUDPData(SelectionKey key) {
-        ByteBuffer writeBuffer = ByteBuffer.allocate(64 * 1024);
+    // Wraps raw data from the net into a valid incoming IP packet
+    public ByteBuffer processOutput(SelectionKey key) {
+        ByteBuffer writeBuffer = ByteBuffer.allocate(IP_PACKET_SIZE);
         // leave bytes for IP
-        writeBuffer.position(20);
+        writeBuffer.position(IP_HEADER_LEN);
 
-        Pair<InetSocketAddress, InetSocketAddress> attachment = (Pair<InetSocketAddress, InetSocketAddress>) key.attachment();
-        InetSocketAddress src = attachment.first;
-        InetSocketAddress dst = attachment.second;
-        try {
-            int numBytes = mUDPHandler.processData((DatagramChannel) key.channel(), writeBuffer, src.getPort(), dst.getPort());
+        if (key.channel() instanceof DatagramChannel) {
+            try {
+                Pair<InetSocketAddress, InetSocketAddress> attachment = (Pair<InetSocketAddress, InetSocketAddress>) key.attachment();
+                InetSocketAddress src = attachment.first;
+                InetSocketAddress dst = attachment.second;
+                byte numBytes = mUDPHandler.processOutput((DatagramChannel) key.channel(), writeBuffer, src.getPort(), dst.getPort());
+                fillHeader(writeBuffer, IP_HEADER_LEN, numBytes, UDP_PROTOCOL, src, dst);
 
-            // write IP header
-            writeBuffer.put((byte) 0x45);  // IP version + IP header length
-            writeBuffer.put((byte) 0);    // Type of service
-            writeBuffer.putShort((short) (20 + numBytes));  // IP datagram length
-            writeBuffer.putShort((short) 0);    // Packet ID
-            writeBuffer.putShort((short) 0x4000);    // Control bits + fragment offset
-            writeBuffer.put((byte) 64);        // non-zero TTL
-            writeBuffer.put((byte) 0x11);        // Protocol UDP ID
-            writeBuffer.putShort((short) 0);     // Checksum
-            for (byte b : src.getAddress().getAddress()) {
-                writeBuffer.put(b);
+                writeBuffer.limit(IP_HEADER_LEN + numBytes);
+                return writeBuffer;
+            } catch (IOException e) {
+                e.printStackTrace();
             }
-            for (byte b : dst.getAddress().getAddress()) {
-                writeBuffer.put(b);
+        } else {
+            try {
+                return mTCPHandler.processOutput(key, writeBuffer);
+            } catch (IOException e) {
+                e.printStackTrace();
             }
-
-            writeBuffer.position(0);
-            updateChecksum(writeBuffer);
-            writeBuffer.position(0);
-            writeBuffer.limit(20+numBytes);
-
-            hexdump(writeBuffer, 64);
-            return writeBuffer;
-        } catch (IOException e) {
-            e.printStackTrace();
         }
         return null;
     }
 
-    private void updateChecksum(ByteBuffer buf) {
-        int sum = 0;
-        int headerLength = 20;
-        while (headerLength> 0) {
-            sum += BitUtils.getUnsignedShort(buf.getShort());
-            headerLength -= 2;
-        }
-        while (sum >> 16 > 0)
-            sum = (sum & 0xFFFF) + (sum >> 16);
+    public static void fillHeader(ByteBuffer buf, byte headerLen, short dataLen, byte protocol,
+                            InetSocketAddress src, InetSocketAddress dst) {
+        // move position to the beginning of IP header
+        buf.position(0);
 
-        sum = ~sum;
-        buf.putShort(10, (short) sum);
+        buf.put((byte) (IP4_VERSION << 4 | (byte) (headerLen/4)));  // IP version + IP header length
+        buf.put((byte) 0);    // Type of service
+        buf.putShort((short) ((short) headerLen + dataLen));  // IP datagram length
+        buf.putShort((short) 0);    // Packet ID
+        buf.putShort((short) 0x4000);    // FIXME: random number. Control bits + fragment offset
+        buf.put(IP_TTL);        // non-zero TTL
+        buf.put(protocol);        // Protocol UDP ID
+        buf.putShort((short) 0);     // Checksum
+        for (byte b : src.getAddress().getAddress()) {
+            buf.put(b);
+        }
+        for (byte b : dst.getAddress().getAddress()) {
+            buf.put(b);
+        }
+
+        Log.d(TAG, "src = " + src + " dst=" + dst);
+
+        Utils.updateIPChecksum(buf);
+        Utils.hexdump(buf, 20);
     }
 
-    private static class BitUtils {
-        private static short getUnsignedByte(byte value) { return (short)(value & 0xFF); }
-
-        private static int getUnsignedShort(short value) { return value & 0xFFFF; }
-
-        private static long getUnsignedInt(int value) { return value & 0xFFFFFFFFL; }
+    public void processConnect(SelectionKey key) {
+        mTCPHandler.processConnect(key);
     }
 }
