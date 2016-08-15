@@ -29,19 +29,12 @@ public class VPNThread extends Thread {
     private final VpnService mVPNService;
     private ParcelFileDescriptor mVpnFileDescriptor;
 
-    private final Selector mSelector;
-    private final IPHandler mIPHandler;
-    private List<ByteBuffer> mWriteQueue = new ArrayList<>();
-
     public VPNThread(ParcelFileDescriptor fd, VPNCaptureService svc) throws IOException {
         mVpnFileDescriptor = fd;
         mVpnIn = new FileInputStream(mVpnFileDescriptor.getFileDescriptor()).getChannel();
         mVpnOut = new FileOutputStream(mVpnFileDescriptor.getFileDescriptor()).getChannel();
         mSocketManager = new SocketManager(this);
         mVPNService = svc;
-
-        mSelector = Selector.open();
-        mIPHandler = new IPHandler(mSelector, svc, this);
     }
 
     @Override
@@ -86,58 +79,5 @@ public class VPNThread extends Thread {
         } catch (IOException e) {
             IPUtils.panic("exception in write to VPN fd" + e.getMessage());
         }
-    }
-
-    public void runX() {
-        try {
-            while (!Thread.interrupted()) {
-                ByteBuffer readBuffer = ByteBuffer.allocate(IPHandler.IP_PACKET_SIZE);
-                int readyChannels = mSelector.select(10); // terminate after 10ms if no FD becomes active
-
-                readBuffer.clear();
-                int len = mVpnIn.read(readBuffer);
-                if (len > 0) {
-                    Log.d(TAG, "read data len="+len);
-                    readBuffer.flip();
-                    mIPHandler.processInput(readBuffer);
-                }
-
-                if (readyChannels > 0) {
-                    Set<SelectionKey> keys = mSelector.selectedKeys();
-                    for (SelectionKey key : keys) {
-                        if (key.isValid() && key.isReadable()) {
-                            ByteBuffer writeBuffer = mIPHandler.processOutput(key);
-                            if (writeBuffer != null) {
-                                mWriteQueue.add(writeBuffer);
-                            }
-                        }
-                        if (key.isValid() && key.isConnectable()) {
-                            mIPHandler.processConnect(key);
-                        }
-                    }
-                }
-
-                for (ByteBuffer b : mWriteQueue) {
-                    Log.d(TAG, "WRITING IP PACKET");
-                    Utils.hexdump(b, b.remaining());
-                    len = mVpnOut.write(b);
-                    Log.d(TAG, "write IP data="+len);
-                }
-                mWriteQueue.clear();
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
-        } finally {
-            try {
-                mSelector.close();
-                mVpnFileDescriptor.close();
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-        }
-    }
-
-    public void addToOutput(ByteBuffer buffer) {
-        mWriteQueue.add(buffer);
     }
 }

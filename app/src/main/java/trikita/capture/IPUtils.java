@@ -222,6 +222,13 @@ public final class IPUtils {
 
     public static class TCPHeader {
         public static final int DEFAULT_LENGTH = 20;
+        public static final byte TCP_FLAG_FIN = (1 << 0);
+        public static final byte TCP_FLAG_SYN = (1 << 1);
+        public static final byte TCP_FLAG_RST = (1 << 2);
+        public static final byte TCP_FLAG_PSH = (1 << 3);
+        public static final byte TCP_FLAG_ACK = (1 << 4);
+        public static final byte TCP_FLAG_URG = (1 << 5);
+
         public int srcPort;
         public int dstPort;
         public int seq;
@@ -250,6 +257,49 @@ public final class IPUtils {
             tcp.position(position + header.dataOffset);
 
             return header;
+        }
+
+        public static void fill(ByteBuffer tcp, InetSocketAddress src, InetSocketAddress dst, int seq, int ack, int flags, int n) {
+            int position = tcp.position();
+            tcp.putShort((short) src.getPort());
+            tcp.putShort((short) dst.getPort());
+            tcp.putInt(seq);
+            tcp.putInt(ack);
+            tcp.put((byte) ((DEFAULT_LENGTH/4) << 4));
+            tcp.put((byte) flags);
+            tcp.putShort((short) 0xffff); // TODO: window size
+            tcp.putShort((short) 0); // Clear checksum
+            tcp.putShort((short) 0); // No urgent pointer
+            tcp.position(position);
+            updateChecksum(tcp, src, dst, n);
+        }
+
+        private static void updateChecksum(ByteBuffer tcp, InetSocketAddress src, InetSocketAddress dst, int n) {
+            int sum = 0;
+            int pos = tcp.position();
+            byte[] srcAddr = src.getAddress().getAddress();
+            byte[] dstAddr = dst.getAddress().getAddress();
+
+            // Calculate pseudo-header checksum
+            sum = (((srcAddr[0] & 0xff) << 8) | (srcAddr[1] & 0xff)) +
+                    (((srcAddr[2] & 0xff) << 8) | (srcAddr[3] & 0xff)) +
+                    (((dstAddr[0] & 0xff) << 8) | (dstAddr[1] & 0xff)) +
+                    (((dstAddr[2] & 0xff) << 8) | (dstAddr[3] & 0xff)) +
+                    PROTO_TCP + DEFAULT_LENGTH + n;
+
+            // Calculate TCP segment checksum
+            for (int i = DEFAULT_LENGTH + n; i > 1; i -= 2) {
+                int x = (tcp.getShort() & 0xffff);
+                sum += x;
+            }
+            if (n % 2 > 0) {
+                sum += (tcp.get() & 0xff) << 8;
+            }
+            while ((sum >> 16) > 0) {
+                sum = (sum & 0xffff) + (sum >> 16);
+            }
+            sum = ~sum;
+            tcp.putShort(pos + 16, (short) sum);
         }
 
         @Override

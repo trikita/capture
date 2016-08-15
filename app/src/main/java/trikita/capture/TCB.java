@@ -1,93 +1,68 @@
 package trikita.capture;
 
-import android.util.Pair;
-
 import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.SocketChannel;
+import java.nio.channels.spi.AbstractSelectableChannel;
 
 public class TCB {
 
-    private long mSeqLocal;
-    private long mSeqRemote;
-    private long mAckLocal;
-    private long mAckRemote;
+    public static final int SYN_SENT = 0;
+    public static final int SYN_RECEIVED = 1;
+    public static final int ESTABLISHED = 2;
+    public static final int CLOSE_WAIT = 3;
+    public static final int LAST_ACK = 4;
 
-    private TCBStatus mStatus;
-    private Pair<InetSocketAddress, InetSocketAddress> uniqueKey;
+    private final IPUtils.SocketID mID;
+    private final SocketChannel mSocket;
+    private int mLocalSeq;
+    private int mLocalAck;
+    private int mRemoteSeq;
+    private int mRemoteAck;
 
-    public void setUniqueKey(Pair<InetSocketAddress, InetSocketAddress> uniqueKey) {
-        this.uniqueKey = uniqueKey;
-    }
-
-    public Pair<InetSocketAddress, InetSocketAddress> getUniqueKey() {
-        return uniqueKey;
-    }
-
-    public long getAckRemote() {
-        return mAckRemote;
-    }
-
-    public void setAckRemote(long mAckRemote) {
-        this.mAckRemote = mAckRemote;
-    }
-
-    public long getAckLocal() {
-        return mAckLocal;
-    }
-
-    public void setAckLocal(long mAckLocal) {
-        this.mAckLocal = mAckLocal;
-    }
-
-    public long getSeqLocal() {
-        return mSeqLocal;
-    }
-
-    public void setSeqLocal(long mSeqLocal) {
-        this.mSeqLocal = mSeqLocal;
-    }
-
-    public long getSeqRemote() {
-        return mSeqRemote;
-    }
-
-    public void setSeqRemote(long mSeqRemote) {
-        this.mSeqRemote = mSeqRemote;
-    }
-
-    // TCP has more states, but we need only these
-    public enum TCBStatus {
-        SYN_SENT,
-        SYN_RECEIVED,
-        ESTABLISHED,
-        CLOSE_WAIT,
-        LAST_ACK,
-    }
-
-    private SocketChannel mSocket;
+    private int mStatus = SYN_SENT;
     private SelectionKey mSelectionKey;
 
-    public TCB(long seqLocal, long seqRemote, long ackLocal, long ackRemote, SocketChannel s) {
-        mSeqLocal = seqLocal;
-        mSeqRemote = seqRemote;
-        mAckLocal = ackLocal;
-        mAckRemote = ackRemote;
-
-        mSocket = s;
+    public TCB(IPUtils.SocketID id, SocketChannel socket, int localSeq, int remoteSeq, int localAck, int remoteAck) {
+        mID = id;
+        mSocket = socket;
+        mLocalSeq = localSeq;
+        mLocalAck = localAck;
+        mRemoteSeq = remoteSeq;
+        mRemoteAck = remoteAck;
     }
 
-    public TCBStatus getStatus() { return mStatus; }
+    public int getRemoteAck() { return mRemoteAck; }
+    public int getRemoteSeq() { return mRemoteSeq; }
+    public int getLocalAck() { return mLocalAck; }
+    public int getLocalSeq() { return mLocalSeq; }
+    public int getStatus() { return mStatus; }
+    public IPUtils.SocketID getID() { return mID; }
     public SocketChannel getSocket() { return mSocket; }
-    public SelectionKey getSelectionKey() { return mSelectionKey; }
-
-    public void setStatus(TCBStatus status) { this.mStatus = status; }
-    public void setSocket(SocketChannel socket) { this.mSocket = socket; }
-    public void setSelectionKey(SelectionKey selectionKey) { this.mSelectionKey = selectionKey; }
 
     public void closeSocket() {
         try { mSocket.close(); } catch (IOException e) {}
+    }
+
+    public void advanceSeq(int n) {
+        mLocalSeq += n;
+    }
+
+    // TODO: do we nede it?
+    public void setSelectionKey(SelectionKey selectionKey) {
+        mSelectionKey = selectionKey;
+    }
+
+    public void setStatus(int status) {
+        mStatus = status;
+    }
+
+    public void setLocalAck(int ack) {
+        mLocalAck = ack;
+    }
+
+    public void setRemoteAck(int ack) {
+        mRemoteAck = ack;
     }
 }
 
