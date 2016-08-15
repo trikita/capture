@@ -2,7 +2,6 @@ package trikita.capture;
 
 import android.net.VpnService;
 import android.os.ParcelFileDescriptor;
-import android.util.Log;
 
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -10,15 +9,7 @@ import java.io.IOException;
 import java.net.DatagramSocket;
 import java.net.Socket;
 import java.nio.ByteBuffer;
-import java.nio.channels.DatagramChannel;
 import java.nio.channels.FileChannel;
-import java.nio.channels.SelectionKey;
-import java.nio.channels.Selector;
-import java.nio.channels.SocketChannel;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Set;
 
 public class VPNThread extends Thread {
     private static final String TAG = "VPNThread";
@@ -71,7 +62,6 @@ public class VPNThread extends Thread {
 
     public void write(ByteBuffer ip) {
         try {
-            Log.d(TAG, IPUtils.hexdump("INCOMING IP PACKET:", ip));
             mVpnOut.write(ip);
             if (ip.hasRemaining()) {
                 IPUtils.panic("incomplete write to VPN fd");

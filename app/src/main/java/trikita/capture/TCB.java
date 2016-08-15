@@ -3,7 +3,6 @@ package trikita.capture;
 import java.io.IOException;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.SocketChannel;
-import java.nio.channels.spi.AbstractSelectableChannel;
 
 public class TCB {
 
@@ -41,7 +40,14 @@ public class TCB {
     public SocketChannel getSocket() { return mSocket; }
 
     public void closeSocket() {
-        try { mSocket.close(); } catch (IOException e) {}
+        if (mSocket != null) {
+            try {
+                System.out.println("really, close socket");
+                mSocket.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
     }
 
     public void advanceSeq(int n) {

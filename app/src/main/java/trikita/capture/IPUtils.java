@@ -71,6 +71,12 @@ public final class IPUtils {
         public InetSocketAddress dst() {
             return this.second;
         }
+
+        @Override
+        public String toString() {
+            return new StringBuilder().append("src=").append(this.first)
+                    .append(", dst = ").append(this.second).toString();
+        }
     }
 
     public static class IPHeader {
