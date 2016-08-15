@@ -1,11 +1,13 @@
 package trikita.capture;
 
+import android.net.VpnService;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
 
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.net.DatagramSocket;
 import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
@@ -21,24 +23,72 @@ import java.util.Set;
 public class VPNThread extends Thread {
     private static final String TAG = "VPNThread";
 
-    private final Selector mSelector;
     private final FileChannel mVpnIn;
     private final FileChannel mVpnOut;
-    private final IPHandler mIPHandler;
-
+    private final SocketManager mSocketManager;
+    private final VpnService mVPNService;
     private ParcelFileDescriptor mVpnFileDescriptor;
+
+    private final Selector mSelector;
+    private final IPHandler mIPHandler;
     private List<ByteBuffer> mWriteQueue = new ArrayList<>();
 
     public VPNThread(ParcelFileDescriptor fd, VPNCaptureService svc) throws IOException {
         mVpnFileDescriptor = fd;
         mVpnIn = new FileInputStream(mVpnFileDescriptor.getFileDescriptor()).getChannel();
         mVpnOut = new FileOutputStream(mVpnFileDescriptor.getFileDescriptor()).getChannel();
+        mSocketManager = new SocketManager(this);
+        mVPNService = svc;
+
         mSelector = Selector.open();
         mIPHandler = new IPHandler(mSelector, svc, this);
     }
 
     @Override
     public void run() {
+        ByteBuffer ip = ByteBuffer.allocate(IPUtils.MAX_DATAGRAM_SIZE);
+        try {
+            while (!Thread.interrupted()) {
+                ip.clear();
+                int n = mVpnIn.read(ip);
+                if (n > 0) {
+                    ip.flip();
+                    mSocketManager.processIPOut(ip);
+                }
+                mSocketManager.select(ip);
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        } finally {
+            try {
+                mVpnFileDescriptor.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    public void protect(Socket channel) {
+        mVPNService.protect(channel);
+    }
+
+    public void protect(DatagramSocket channel) {
+        mVPNService.protect(channel);
+    }
+
+    public void write(ByteBuffer ip) {
+        try {
+            Log.d(TAG, IPUtils.hexdump("INCOMING IP PACKET:", ip));
+            mVpnOut.write(ip);
+            if (ip.hasRemaining()) {
+                IPUtils.panic("incomplete write to VPN fd");
+            }
+        } catch (IOException e) {
+            IPUtils.panic("exception in write to VPN fd" + e.getMessage());
+        }
+    }
+
+    public void runX() {
         try {
             while (!Thread.interrupted()) {
                 ByteBuffer readBuffer = ByteBuffer.allocate(IPHandler.IP_PACKET_SIZE);
