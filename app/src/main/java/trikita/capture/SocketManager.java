@@ -70,6 +70,10 @@ public class SocketManager {
             }
         } else if ((tcpHeader.flags & IPUtils.TCPHeader.TCP_FLAG_SYN) != 0) {
             // Duplicate SYN (connection retry)
+        } else if ((tcpHeader.flags & IPUtils.TCPHeader.TCP_FLAG_RST) != 0) {
+            // Immediate connection reset
+        } else if ((tcpHeader.flags & IPUtils.TCPHeader.TCP_FLAG_FIN) != 0) {
+            // Graceful connection termination
         } else if ((tcpHeader.flags & IPUtils.TCPHeader.TCP_FLAG_ACK) != 0) {
             // Process outgoing ACK (e.g. when data is written to socket)
             processTCPAckOut(tcb, tcpHeader, data);
@@ -112,22 +116,28 @@ public class SocketManager {
     }
 
     private void finishTCPConnect(TCB tcb, ByteBuffer ip) {
-        IPUtils.SocketID id = tcb.getID();
-        tcb.setStatus(TCB.SYN_RECEIVED);
+        try {
+            if (tcb.getSocket().finishConnect()) {
+                IPUtils.SocketID id = tcb.getID();
+                tcb.setStatus(TCB.SYN_RECEIVED);
 
-        ip.clear();
+                ip.clear();
 
-        ip.position(IPUtils.IPHeader.DEFAULT_LENGTH);
-        IPUtils.TCPHeader.fill(ip, id.dst(), id.src(), tcb.getLocalSeq(), tcb.getLocalAck(),
-                IPUtils.TCPHeader.TCP_FLAG_SYN | IPUtils.TCPHeader.TCP_FLAG_ACK, 0);
+                ip.position(IPUtils.IPHeader.DEFAULT_LENGTH);
+                IPUtils.TCPHeader.fill(ip, id.dst(), id.src(), tcb.getLocalSeq(), tcb.getLocalAck(),
+                        IPUtils.TCPHeader.TCP_FLAG_SYN | IPUtils.TCPHeader.TCP_FLAG_ACK, 0);
 
-        ip.position(0);
-        IPUtils.IPHeader.fill(ip, id.dst(), id.src(), IPUtils.PROTO_TCP, IPUtils.TCPHeader.DEFAULT_LENGTH);
+                ip.position(0);
+                IPUtils.IPHeader.fill(ip, id.dst(), id.src(), IPUtils.PROTO_TCP, IPUtils.TCPHeader.DEFAULT_LENGTH);
 
-        ip.position(0);
-        ip.limit(IPUtils.IPHeader.DEFAULT_LENGTH + IPUtils.TCPHeader.DEFAULT_LENGTH);
-        tcb.advanceSeq(1); // SYN counts as a byte
-        mVPN.write(ip);
+                ip.position(0);
+                ip.limit(IPUtils.IPHeader.DEFAULT_LENGTH + IPUtils.TCPHeader.DEFAULT_LENGTH);
+                tcb.advanceSeq(1); // SYN counts as a byte
+                mVPN.write(ip);
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
     private void processTCPAckOut(TCB tcb, IPUtils.TCPHeader tcpHeader, ByteBuffer data) {
