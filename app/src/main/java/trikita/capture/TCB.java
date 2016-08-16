@@ -11,6 +11,7 @@ public class TCB {
     public static final int ESTABLISHED = 2;
     public static final int CLOSE_WAIT = 3;
     public static final int LAST_ACK = 4;
+    public static final int CLOSE_WAIT_2 = 5;
 
     private final IPUtils.SocketID mID;
     private final SocketChannel mSocket;

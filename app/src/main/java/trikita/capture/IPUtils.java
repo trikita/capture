@@ -5,7 +5,6 @@ import android.util.Pair;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.SocketAddress;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -31,18 +30,25 @@ public final class IPUtils {
     public static String hexdump(String prefix, ByteBuffer b) {
         int pos = b.position();
         StringBuilder sb = new StringBuilder(prefix).append("\n  ");
+        StringBuilder ascii = new StringBuilder();
         int len = b.remaining();
         for (int i = 0; i < len; i++) {
             byte octet = b.get();
             sb.append(HEX[((octet & 0xf0) >> 4)]);
             sb.append(HEX[(octet & 0x0f)]);
             sb.append(' ');
+            if (Character.isISOControl(octet)) {
+                ascii.append('.');
+            } else {
+                ascii.append((char) octet);
+            }
             if (i % 16 == 15) {
-                sb.append("\n  ");
+                sb.append("   ").append(ascii.toString()).append("\n  ");
+                ascii = new StringBuilder();
             }
         }
         b.position(pos);
-        return sb.toString();
+        return sb.append(ascii.toString()).toString();
     }
 
     public static class SocketID extends Pair<InetSocketAddress, InetSocketAddress> {

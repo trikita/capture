@@ -1,5 +1,6 @@
 package trikita.capture;
 
+import android.os.Build;
 import android.util.Log;
 
 import java.io.IOException;
@@ -64,6 +65,7 @@ public class SocketManager {
     //
 
     public void processIPOut(ByteBuffer ip) {
+//        Log.d(TAG, IPUtils.hexdump("IP OUT: ", ip));
         IPUtils.IPHeader.parse(ip, mIPHeader);
         if (mIPHeader.protocol == IPUtils.PROTO_TCP) {
             IPUtils.TCPHeader.parse(ip, mTCPHeader);
@@ -150,39 +152,75 @@ public class SocketManager {
     private void processTCPOut(IPUtils.IPHeader ipHeader, IPUtils.TCPHeader tcpHeader, ByteBuffer data) {
         IPUtils.SocketID id = IPUtils.SocketID.fromTCP(ipHeader, tcpHeader);
         TCB tcb = mTCPSockets.get(id);
-        if (tcb == null) {
-            // Expect the first packet to have a SYN flag (e.g. socket doing connect())
-            if ((tcpHeader.flags & IPUtils.TCPHeader.TCP_FLAG_SYN) != 0) {
+        boolean ok = false;
+        if ((tcpHeader.flags & IPUtils.TCPHeader.TCP_FLAG_SYN) != 0) {
+            if (tcb == null) {
                 if ((tcb = startTCPConnect(id, ipHeader, tcpHeader)) != null) {
                     mTCPSockets.put(id, tcb);
                 }
             } else {
-//                resetTCP(id, tcpHeader.seq+1);
+                processTCPDuplicateSynOut(id, tcpHeader);
             }
-        } else if ((tcpHeader.flags & IPUtils.TCPHeader.TCP_FLAG_SYN) != 0) {
-            processTCPDuplicateSynOut(id, tcpHeader);
-        } else if ((tcpHeader.flags & IPUtils.TCPHeader.TCP_FLAG_RST) != 0) {
-            closeTCP(id);
-        } else if ((tcpHeader.flags & IPUtils.TCPHeader.TCP_FLAG_FIN) != 0) {
-            processTCPFinOut(tcb, tcpHeader);
-        } else if ((tcpHeader.flags & IPUtils.TCPHeader.TCP_FLAG_ACK) != 0) {
+            ok = true;
+        }
+
+        if (tcb == null) {
+            IPUtils.panic("received TCP outgoing packet for null connection: " + tcpHeader);
+            return;
+        }
+
+        if ((tcpHeader.flags & IPUtils.TCPHeader.TCP_FLAG_ACK) != 0) {
             processTCPAckOut(tcb, tcpHeader, data);
-        } else {
-            IPUtils.panic("unexpected tcp flags: " + tcpHeader.flags);
+            ok = true;
+        }
+
+        if ((tcpHeader.flags & IPUtils.TCPHeader.TCP_FLAG_RST) != 0) {
+            closeTCP(id);
+            ok = true;
+        }
+
+        if ((tcpHeader.flags & IPUtils.TCPHeader.TCP_FLAG_FIN) != 0) {
+            processTCPFinOut(tcb, tcpHeader);
+            ok = true;
+        }
+
+        if (!ok) {
+            IPUtils.panic("TCP packet was not processed: " + tcpHeader + " " + tcb.getID());
         }
     }
 
     private void processTCPFinOut(TCB tcb, IPUtils.TCPHeader tcpHeader) {
-        Log.d(TAG, "FIN out " + tcb.getID());
-        tcb.setLocalAck(tcpHeader.seq + 1);
-        tcb.setRemoteAck(tcpHeader.ack);
-        tcb.setStatus(TCB.LAST_ACK);
-        processIPIn(mIPOutBuffer, tcb.getID(), 0, tcb, IPUtils.TCPHeader.TCP_FLAG_ACK | IPUtils.TCPHeader.TCP_FLAG_FIN);
-        tcb.advanceSeq(1);
+        try {
+            if (tcb.getStatus() == TCB.ESTABLISHED) {
+                Log.d(TAG, "FIN out for full-duplex connection " + tcb.getID());
+                tcb.setLocalAck(tcpHeader.seq + 1);
+                tcb.setRemoteAck(tcpHeader.ack);
+                tcb.setStatus(TCB.CLOSE_WAIT);
+                processIPIn(mIPOutBuffer, tcb.getID(), 0, tcb, IPUtils.TCPHeader.TCP_FLAG_ACK);
+                tcb.advanceSeq(1);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    // For some reason Android SDK missed shutdownOutput method from JDK6...
+                    tcb.getSocket().shutdownOutput();
+                } else {
+                    tcb.getSocket().socket().shutdownOutput();
+                }
+            } else if (tcb.getStatus() == TCB.CLOSE_WAIT_2) {
+                Log.d(TAG, "FIN out for half-duplex connection " + tcb.getID());
+                tcb.setLocalAck(tcpHeader.seq + 1);
+                tcb.setRemoteAck(tcpHeader.ack);
+                processIPIn(mIPOutBuffer, tcb.getID(), 0, tcb, IPUtils.TCPHeader.TCP_FLAG_ACK);
+                tcb.advanceSeq(1);
+                closeTCP(tcb.getID());
+            } else {
+                IPUtils.panic("FIN out unexpected: " + tcb.getID());
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
     private void closeTCP(IPUtils.SocketID id) {
-        Log.d(TAG, "connection reset by peer:" + id);
+        Log.d(TAG, "connection close (RST or FIN or just cleanup):" + id);
         TCB tcb = mTCPSockets.get(id);
         if (tcb != null) {
             Log.d(TAG, "close tcb" + tcb.getID());
@@ -271,9 +309,11 @@ public class SocketManager {
         Log.d(TAG, "ACK outgoing: " + tcb.getID());
         try {
             if (tcb.getStatus() == TCB.SYN_RECEIVED) {
+                Log.d(TAG, "First ACK " + tcb.getID());
                 tcb.setStatus(TCB.ESTABLISHED);
                 tcb.setSelectionKey(tcb.getSocket().register(mSelector, SelectionKey.OP_READ, tcb));
             } else if (tcb.getStatus() == TCB.LAST_ACK) {
+                Log.d(TAG, "Last ACK " + tcb.getID());
                 closeTCP(tcb.getID());
                 return;
             }
@@ -308,28 +348,34 @@ public class SocketManager {
         TCB tcb = (TCB) k.attachment();
         Log.d(TAG, "ACK incoming: " + tcb.getID() + " status = " + tcb.getStatus());
         try {
-            ip.position(IPUtils.IPHeader.DEFAULT_LENGTH + IPUtils.TCPHeader.DEFAULT_LENGTH);
             if (!tcb.getSocket().isConnected()) {
                 Log.d(TAG, "socket not connected: " + tcb.getID());
+                k.interestOps(0);
                 return;
             }
+            ip.clear();
+            ip.position(IPUtils.IPHeader.DEFAULT_LENGTH + IPUtils.TCPHeader.DEFAULT_LENGTH);
             int n = tcb.getSocket().read(ip);
+            Log.d(TAG, "socket read returned " + n);
             if (n <= 0) {
                 Log.d(TAG, "socket closed from the remote end");
                 k.interestOps(0);
-//                if (tcb.getStatus() != TCB.CLOSE_WAIT) {
-//                    Log.d(TAG, "close wait");
-//                    processIPIn(mIPOutBuffer, tcb.getID(), 0, tcb, IPUtils.TCPHeader.TCP_FLAG_FIN | IPUtils.TCPHeader.TCP_FLAG_ACK);
-//                    tcb.advanceSeq(1); // FIN counts as byte
-//                    resetTCP(tcb.getID(), 0);
-//                    return;
-//                }
-                Log.d(TAG, "close wait");
-                tcb.setStatus(TCB.LAST_ACK);
+                if (tcb.getStatus() == TCB.CLOSE_WAIT) {
+                    Log.d(TAG, "half-duplex connection shutdown");
+//                    tcb.setStatus(TCB.LAST_ACK);
+                    processIPIn(mIPOutBuffer, tcb.getID(), 0, tcb, IPUtils.TCPHeader.TCP_FLAG_FIN);
+                    tcb.advanceSeq(1); // FIN counts as byte
+                    return;
+                }
+                Log.d(TAG, "full-duplex connection shutdown");
+                tcb.setStatus(TCB.CLOSE_WAIT_2);
                 processIPIn(mIPOutBuffer, tcb.getID(), 0, tcb, IPUtils.TCPHeader.TCP_FLAG_FIN | IPUtils.TCPHeader.TCP_FLAG_ACK);
                 tcb.advanceSeq(1); // FIN counts as byte
                 return;
             }
+            ip.flip();
+            IPUtils.hexdump("READ FROM TCP SOCKET: ", ip);
+
             ip.clear();
             processIPIn(ip, tcb.getID(), n, tcb, IPUtils.TCPHeader.TCP_FLAG_PSH | IPUtils.TCPHeader.TCP_FLAG_ACK);
             tcb.advanceSeq(n);
